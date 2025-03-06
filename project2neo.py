@@ -4,32 +4,32 @@ import importlib.util
 from pathlib import Path
 from neomodel import config, StructuredNode, StringProperty, RelationshipTo, db
 
-# Neo4j 数据库配置
+# Setup Neo4j connection
 config.DATABASE_URL = 'bolt://neo4j:password@localhost:7687'
 
-# 数据模型定义
+# Define data models
 class ModuleNode(StructuredNode):
-    path = StringProperty(unique_index=True)  # 模块文件路径
-    name = StringProperty(index=True)         # 模块名称
+    path = StringProperty(unique_index=True)  # module path
+    name = StringProperty(index=True)         # module name
     classes = RelationshipTo('ClassNode', 'CONTAINS_CLASS')
     imports = RelationshipTo('ModuleNode', 'IMPORTS')
 
 class ClassNode(StructuredNode):
     name = StringProperty(index=True)
-    full_name = StringProperty(unique_index=True)  # 模块.类名
+    full_name = StringProperty(unique_index=True)  # module.classname
     methods = RelationshipTo('MethodNode', 'HAS_METHOD')
     attributes = RelationshipTo('AttributeNode', 'HAS_ATTRIBUTE')
 
 class MethodNode(StructuredNode):
     name = StringProperty(index=True)
-    full_name = StringProperty(unique_index=True)  # 模块.类名.方法名
+    full_name = StringProperty(unique_index=True)  # module.class.method
     args = StringProperty()
 
 class AttributeNode(StructuredNode):
     name = StringProperty(index=True)
-    full_name = StringProperty(unique_index=True)  # 模块.类名.属性名
+    full_name = StringProperty(unique_index=True)  # module.class.attribute
 
-# 获取导入信息的访问者类
+# get importVisitor info
 class ImportVisitor(ast.NodeVisitor):
     def __init__(self):
         self.imports = []
@@ -48,11 +48,11 @@ class ImportVisitor(ast.NodeVisitor):
                     self.imports.append(f".{'.' * (node.level-1)}{node.module}")
         self.generic_visit(node)
 
-# 清除数据库中的所有数据
+# Clear existing data in database (for testing)
 def clear_database():
     db.cypher_query("MATCH (n) DETACH DELETE n")
 
-# 解析Python文件结构并收集导入信息
+# Parse Python file structures and collect import info
 def parse_python_file(file_path, project_root):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -60,18 +60,18 @@ def parse_python_file(file_path, project_root):
         
         tree = ast.parse(file_content)
         
-        # 获取导入信息
+        # get import info
         import_visitor = ImportVisitor()
         import_visitor.visit(tree)
         imports = import_visitor.imports
         
-        # 获取模块相对路径
+        # Retrieve module relative paths
         rel_path = os.path.relpath(file_path, project_root)
         module_path = rel_path.replace(os.path.sep, '.')
         if module_path.endswith('.py'):
             module_path = module_path[:-3]
         
-        # 收集类、方法和属性信息
+        # Collect class, method, and attribute information
         classes = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
@@ -82,7 +82,7 @@ def parse_python_file(file_path, project_root):
                     "attributes": []
                 }
                 
-                # 提取函数
+                # Extract methods
                 for item in node.body:
                     if isinstance(item, ast.FunctionDef) or isinstance(item, ast.AsyncFunctionDef):
                         args = [arg.arg for arg in item.args.args if arg.arg != 'self']
@@ -91,7 +91,7 @@ def parse_python_file(file_path, project_root):
                             "full_name": f"{module_path}.{node.name}.{item.name}",
                             "args": args
                         })
-                    # 提取类属性
+                    # Extract class attributes
                     elif isinstance(item, ast.Assign) and len(item.targets) == 1:
                         if isinstance(item.targets[0], ast.Name):
                             attr_name = item.targets[0].id
@@ -117,7 +117,7 @@ def parse_python_file(file_path, project_root):
             "classes": []
         }
 
-# 查找项目中所有Python文件并解析
+# Locate and parse all Python files in the project
 def find_and_parse_python_files(project_root):
     project_root = os.path.abspath(project_root)
     modules = []
@@ -131,12 +131,12 @@ def find_and_parse_python_files(project_root):
     
     return modules
 
-# 将解析的项目结构保存到Neo4j
+# Save parsed project to Neo4j
 def save_project_to_neo4j(modules):
-    # 创建一个映射，用于存储模块路径到ModuleNode的映射
+    # Create a map to store mappings from module paths to ModuleNode objects
     module_nodes = {}
     
-    # 第一步：创建所有模块节点
+    # First step: create all module nodes
     for module in modules:
         module_node = ModuleNode(
             path=module["path"],
@@ -144,7 +144,7 @@ def save_project_to_neo4j(modules):
         ).save()
         module_nodes[module["path"]] = module_node
         
-        # 创建该模块中的所有类、方法和属性节点
+        # Create all class, method, attribute nodes in the module
         for cls in module["classes"]:
             class_node = ClassNode(
                 name=cls["name"],
@@ -152,7 +152,7 @@ def save_project_to_neo4j(modules):
             ).save()
             module_node.classes.connect(class_node)
             
-            # 创建方法节点和关系
+            # Create method nodes and relationships 
             for method in cls["methods"]:
                 method_node = MethodNode(
                     name=method["name"],
@@ -161,7 +161,7 @@ def save_project_to_neo4j(modules):
                 ).save()
                 class_node.methods.connect(method_node)
             
-            # 创建属性节点和关系
+            # Create attribute nodes and relationships
             for attr in cls["attributes"]:
                 attr_node = AttributeNode(
                     name=attr["name"],
@@ -169,43 +169,43 @@ def save_project_to_neo4j(modules):
                 ).save()
                 class_node.attributes.connect(attr_node)
     
-    # 第二步：创建模块之间的导入关系
+    # Step 2: Establish import relationships between modules
     for module in modules:
         source_node = module_nodes.get(module["path"])
         if not source_node:
             continue
             
         for import_name in module["imports"]:
-            # 尝试匹配导入的模块
+            # ‌Attempt to match imported modules
             for target_module in modules:
                 if target_module["name"] == import_name or target_module["name"].endswith("." + import_name):
                     target_node = module_nodes.get(target_module["path"])
                     if target_node and target_node != source_node:
-                        # 创建导入关系
+                        # Create import relationships
                         source_node.imports.connect(target_node)
                         break
 
-# 主函数 - 从项目顶层运行
+# main function run at the top of project folder
 def process_project(project_root="."):
-    print(f"开始处理项目: {os.path.abspath(project_root)}")
+    print(f"Start processing project: {os.path.abspath(project_root)}")
     
-    # 清除数据库（可选）
-    print("清除数据库中的旧数据...")
+    # Clear database (optional)
+    print("clear outdated data...")
     clear_database()
     
-    # 解析项目中的所有Python文件
-    print("解析Python文件...")
+    # Parse all python file in the project and save to Neo4j
+    print("Parsing Python files...")
     modules = find_and_parse_python_files(project_root)
-    print(f"找到 {len(modules)} 个Python模块")
+    print(f"Find {len(modules)} python modules")
     
-    # 保存到Neo4j
-    print("保存项目结构到Neo4j...")
+    # Save data to Neo4j
+    print("Saving project strucure to Neo4j...")
     save_project_to_neo4j(modules)
     
-    print("项目结构已成功加载到Neo4j数据库")
+    print("Project structure has been successfully loaded into the Neo4j database")
 
 if __name__ == "__main__":
     import sys
-    # 默认使用当前目录作为项目根目录，或者使用命令行传入的路径
+    # Using current directory by default or use the path provided via cli args
     project_root = sys.argv[1] if len(sys.argv) > 1 else "."
     process_project(project_root)
