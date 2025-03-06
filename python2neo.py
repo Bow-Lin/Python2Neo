@@ -1,7 +1,23 @@
 import ast
-from py2neo import Graph, Node, Relationship
+from neomodel import config, StructuredNode, StringProperty, RelationshipTo, db
 
-# 1. Parse Python file structure
+# 设置Neo4j连接
+config.DATABASE_URL = 'bolt://neo4j:password@localhost:7687'
+
+# 定义数据模型
+class ClassNode(StructuredNode):
+    name = StringProperty(unique_index=True)
+    methods = RelationshipTo('MethodNode', 'HAS_METHOD')
+    attributes = RelationshipTo('AttributeNode', 'HAS_ATTRIBUTE')
+
+class MethodNode(StructuredNode):
+    name = StringProperty(index=True)
+    args = StringProperty()
+
+class AttributeNode(StructuredNode):
+    name = StringProperty(index=True)
+
+# 1. 解析Python文件结构
 def parse_python_file(file_path):
     with open(file_path, "r") as f:
         tree = ast.parse(f.read())
@@ -14,7 +30,7 @@ def parse_python_file(file_path):
                 "methods": [],
                 "attributes": []
             }
-            # Extract Functions
+            # 提取函数
             for item in node.body:
                 if isinstance(item, ast.FunctionDef) or isinstance(item, ast.AsyncFunctionDef):
                     args = [arg.arg for arg in item.args.args if arg.arg != 'self']
@@ -22,41 +38,41 @@ def parse_python_file(file_path):
                         "name": item.name,
                         "args": args
                     })
-                # Extract Class attribute
-                elif isinstance(item, ast.Assign) and isinstance(item.targets, ast.Name):
-                    class_info["attributes"].append(item.targets.id)
+                # 提取类属性
+                elif isinstance(item, ast.Assign) and len(item.targets) == 1:
+                    if isinstance(item.targets[0], ast.Name):
+                        class_info["attributes"].append(item.targets[0].id)
             classes.append(class_info)
     return classes
 
-# 2. Connect to Neo4j database
-graph = Graph("bolt://localhost:7687", auth=("neo4j", "password"))
-graph.delete_all()  # clear old data(for testing)
+# 2. 清除数据库中的旧数据（用于测试）
+def clear_database():
+    db.cypher_query("MATCH (n) DETACH DELETE n")
 
-# 3. Store data to Neo4j
+# 3. 将数据存储到Neo4j
 def save_to_neo4j(classes):
     for cls in classes:
-        # Create Class Node
-        class_node = Node("Class", name=cls["name"])
-        graph.create(class_node)
+        # 创建类节点
+        class_node = ClassNode(name=cls["name"]).save()
         
-        # Create Method node and Relationship
+        # 创建方法节点和关系
         for method in cls["methods"]:
-            method_node = Node("Method", 
-                name=method["name"], 
+            method_node = MethodNode(
+                name=method["name"],
                 args=", ".join(method["args"])
-            )
-            rel = Relationship(class_node, "HAS_METHOD", method_node)
-            graph.create(method_node)
-            graph.create(rel)
+            ).save()
+            class_node.methods.connect(method_node)
         
-        # Create Attribute node and Relationship
+        # 创建属性节点和关系
         for attr in cls["attributes"]:
-            attr_node = Node("Attribute", name=attr)
-            rel = Relationship(class_node, "HAS_ATTRIBUTE", attr_node)
-            graph.create(attr_node)
-            graph.create(rel)
+            attr_node = AttributeNode(name=attr).save()
+            class_node.attributes.connect(attr_node)
 
 if __name__ == "__main__":
-    parsed_classes = parse_python_file("./code-evaluator.py")  # target file path
+    # 清除数据库（可选）
+    clear_database()
+    
+    # 解析Python文件并保存到Neo4j
+    parsed_classes = parse_python_file("./code-evaluator.py")  # 目标文件路径
     save_to_neo4j(parsed_classes)
-    print("data successfully load to Neo4j")
+    print("数据已成功加载到Neo4j")
